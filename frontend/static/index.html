@@ -284,18 +284,39 @@ function bubble(who) {
  * textContent and image URLs are validated, so agent output can't inject HTML.
  * -------------------------------------------------------------------------- */
 
+function unwrapA2uiMsg(m) {
+  if (!m || typeof m !== "object") return {};
+  if (m.kind === "data" && m.data && typeof m.data === "object") {
+    return m.data;
+  }
+  return m;
+}
+
 function boundStr(v) {
   if (v == null) return "";
   if (typeof v === "string") return v;
   if (typeof v.literalString === "string") return v.literalString;
-  return "";
+  if (typeof v.literal_string === "string") return v.literal_string;
+  if (typeof v.value === "string") return v.value;
+  if (typeof v.text === "string") return v.text;
+  if (typeof v === "object") {
+    if (v.literalString) return v.literalString;
+    return JSON.stringify(v);
+  }
+  return String(v);
 }
 
 function childIds(props) {
   const ids = [];
-  if (props && typeof props.child === "string") ids.push(props.child);
-  const ch = props && props.children;
-  if (ch && Array.isArray(ch.explicitList)) for (const c of ch.explicitList) if (typeof c === "string") ids.push(c);
+  if (!props) return ids;
+  if (typeof props.child === "string") ids.push(props.child);
+  if (props.child && typeof props.child === "object" && typeof props.child.id === "string") ids.push(props.child.id);
+  const ch = props.children;
+  if (Array.isArray(ch)) {
+    for (const c of ch) if (typeof c === "string") ids.push(c);
+  } else if (ch && Array.isArray(ch.explicitList)) {
+    for (const c of ch.explicitList) if (typeof c === "string") ids.push(c);
+  }
   return ids;
 }
 
@@ -349,7 +370,8 @@ function buildNode(id, comps, seen) {
 function renderSurface(messages, container) {
   const comps = {};
   const roots = [];
-  for (const m of messages) {
+  for (const rawM of messages) {
+    const m = unwrapA2uiMsg(rawM);
     if (m.beginRendering && typeof m.beginRendering.root === "string") roots.push(m.beginRendering.root);
     const su = m.surfaceUpdate;
     if (su && Array.isArray(su.components)) for (const c of su.components) if (c && c.id && c.component) comps[c.id] = c.component;
@@ -367,7 +389,8 @@ function renderSurface(messages, container) {
 
 function flattenText(messages) {
   const out = [];
-  for (const m of messages) {
+  for (const rawM of messages) {
+    const m = unwrapA2uiMsg(rawM);
     const su = m.surfaceUpdate;
     if (su && Array.isArray(su.components)) for (const c of su.components) if (c && c.component && c.component.Text) out.push(boundStr(c.component.Text.text));
   }
