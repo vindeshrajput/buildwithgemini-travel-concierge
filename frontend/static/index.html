@@ -287,7 +287,10 @@ function bubble(who) {
 function unwrapA2uiMsg(m) {
   if (!m || typeof m !== "object") return {};
   if (m.kind === "data" && m.data && typeof m.data === "object") {
-    return m.data;
+    m = m.data;
+  }
+  if (!m.surfaceUpdate && Array.isArray(m.components)) {
+    return { surfaceUpdate: m };
   }
   return m;
 }
@@ -399,6 +402,25 @@ function flattenText(messages) {
 
 function renderReply(b, parts) {
   b.textContent = "";
+  const newParts = [];
+  for (const p of parts) {
+    if (p && (p.kind === "text" || (!p.kind && p.text))) {
+      const text = p.text || "";
+      const match = text.match(/<a2ui-json>([\s\S]*?)<\/a2ui-json>/i);
+      if (match) {
+        try {
+          const parsed = JSON.parse(match[1].trim());
+          newParts.push({ kind: "a2ui", data: parsed });
+          const textBefore = text.split(/<a2ui-json>/i)[0].trim();
+          if (textBefore) newParts.push({ kind: "text", text: textBefore });
+          continue;
+        } catch (e) {}
+      }
+    }
+    newParts.push(p);
+  }
+  parts = newParts;
+
   const texts = parts.filter(p => p && (p.kind === "text" || (!p.kind && p.text))).map(p => p.text || "");
   const a2ui = parts.filter(p => p && p.kind === "a2ui" && p.data).map(p => p.data);
 
@@ -407,7 +429,12 @@ function renderReply(b, parts) {
 
   if (a2ui.length) {
     b.classList.add("rich");
-    if (!renderSurface(a2ui, b)) b.appendChild(el("div", null, flattenText(a2ui) || "(no card content)"));
+    const drew = renderSurface(a2ui, b);
+    if (!drew) {
+      const flat = flattenText(a2ui);
+      if (flat) b.appendChild(el("div", null, flat));
+      else if (!textStr) b.appendChild(el("div", null, "(no card content)"));
+    }
   }
   if (!b.childNodes.length) b.textContent = "(no response)";
   log.scrollTop = log.scrollHeight;

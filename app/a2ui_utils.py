@@ -30,7 +30,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.llm_response import LlmResponse
 
 # A2UI message kinds this renderer understands (v0.8).
-_A2UI_KEYS = ("beginRendering", "surfaceUpdate", "dataModelUpdate", "deleteSurface")
+_A2UI_KEYS = ("beginRendering", "surfaceUpdate", "dataModelUpdate", "deleteSurface", "components", "a2ui-json")
 
 # Tags the model may wrap around its output (its own render wrapper, or the SDK's).
 _TAG_RE = re.compile(r"</?(?:a2a_datapart_json|a2ui-json)>")
@@ -124,6 +124,8 @@ def _extract_a2ui_messages(text: str) -> list[dict]:
             messages.append(inner)
         elif any(k in value for k in _A2UI_KEYS):
             messages.append(value)
+        elif "components" in value:
+            messages.append({"surfaceUpdate": value})
     return messages
 
 
@@ -176,7 +178,11 @@ def _component_ids_and_refs(components: list) -> tuple[set, set]:
             if isinstance(spec.get("child"), str):
                 refs.add(spec["child"])
             children = spec.get("children")
-            if isinstance(children, dict):
+            if isinstance(children, list):
+                for cid in children:
+                    if isinstance(cid, str):
+                        refs.add(cid)
+            elif isinstance(children, dict):
                 for cid in children.get("explicitList") or []:
                     if isinstance(cid, str):
                         refs.add(cid)
@@ -186,34 +192,58 @@ def _component_ids_and_refs(components: list) -> tuple[set, set]:
 def _surface_is_renderable(messages: list[dict]) -> bool:
     """True only if the messages form a surface adk web can actually draw.
 
-    Guards against the two blank-card failure modes flash models produce:
-      * a lone `beginRendering` with no `surfaceUpdate` body (malformed JSON), and
-      * a surface whose `root` (or a child ref) points at an id that was never
-        defined — the whole tree then renders as nothing.
-    dataModelUpdate / deleteSurface messages are always considered renderable.
+    Auto-repairs missing roots and prunes dangling references so valid parts of
+    the surface always render instead of falling back to error text.
     """
     all_ids: set = set()
     all_refs: set = set()
-    roots: list = []
     has_body = False
     for m in messages:
         if "dataModelUpdate" in m or "deleteSurface" in m:
             return True
-        br = m.get("beginRendering")
-        if isinstance(br, dict) and isinstance(br.get("root"), str):
-            roots.append(br["root"])
         su = m.get("surfaceUpdate")
         if isinstance(su, dict) and su.get("components"):
             has_body = True
             ids, refs = _component_ids_and_refs(su["components"])
             all_ids |= ids
             all_refs |= refs
-    if not has_body:
+
+    if not has_body or not all_ids:
         return False
-    if any(root not in all_ids for root in roots):
-        return False  # root points at an undefined component -> blank
-    if all_refs - all_ids:
-        return False  # dangling child references -> blank
+
+    # Find top candidates (ids not referenced as a child by another component)
+    top_candidates = [i for i in all_ids if i not in all_refs]
+    if not top_candidates:
+        top_candidates = list(all_ids)
+
+    # Ensure beginRendering has a valid root
+    for m in messages:
+        br = m.get("beginRendering")
+        if isinstance(br, dict):
+            if br.get("root") not in all_ids:
+                br["root"] = top_candidates[0]
+
+    # Prune dangling child references from component children
+    for m in messages:
+        su = m.get("surfaceUpdate")
+        if isinstance(su, dict) and su.get("components"):
+            for c in su["components"]:
+                if not isinstance(c, dict):
+                    continue
+                comp = c.get("component")
+                if not isinstance(comp, dict):
+                    continue
+                for spec in comp.values():
+                    if not isinstance(spec, dict):
+                        continue
+                    if isinstance(spec.get("child"), str) and spec["child"] not in all_ids:
+                        spec.pop("child", None)
+                    children = spec.get("children")
+                    if isinstance(children, list):
+                        spec["children"] = [cid for cid in children if cid in all_ids]
+                    elif isinstance(children, dict) and isinstance(children.get("explicitList"), list):
+                        children["explicitList"] = [cid for cid in children["explicitList"] if cid in all_ids]
+
     return True
 
 

@@ -184,7 +184,7 @@ async def chat(req: Request):
             context_id=_contexts.get(user_id),
         )
         last_task = None
-        async for event in a2a_client.send_message(msg):
+        async for event in a2a_client.send_message(SendMessageRequest(message=msg)):
             payload = event.WhichOneof("payload") if hasattr(event, "WhichOneof") else None
             if payload == "task" or (hasattr(event, "HasField") and event.HasField("task")):
                 last_task = event.task
